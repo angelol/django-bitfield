@@ -4,12 +4,6 @@ import six
 
 from django.db.models import signals
 from django.db.models.fields import Field, BigIntegerField
-from django.db.models.fields.subclassing import Creator
-try:
-    from django.db.models.fields.subclassing import SubfieldBase
-except ImportError:
-    # django 1.2
-    from django.db.models.fields.subclassing import LegacyConnection as SubfieldBase  # NOQA
 
 from bitfield.forms import BitFormField
 from bitfield.query import BitQueryLookupWrapper
@@ -59,6 +53,20 @@ class BitFieldFlags(object):
     def values(self):
         return list(self.itervalues())
 
+class Creator(object):
+    """
+    A placeholder class that provides a way to set the attribute on the model.
+    """
+    def __init__(self, field):
+        self.field = field
+
+    def __get__(self, obj, type=None):
+        if obj is None:
+            return self
+        return obj.__dict__[self.field.name]
+
+    def __set__(self, obj, value):
+        obj.__dict__[self.field.name] = self.field.to_python(value)
 
 class BitFieldCreator(Creator):
     """
@@ -77,26 +85,26 @@ class BitFieldCreator(Creator):
         return retval
 
 
-class BitFieldMeta(SubfieldBase):
-    """
-    Modified SubFieldBase to use our contribute_to_class method (instead of
-    monkey-patching make_contrib).  This uses our BitFieldCreator descriptor
-    in place of the default.
+# class BitFieldMeta(SubfieldBase):
+#     """
+#     Modified SubFieldBase to use our contribute_to_class method (instead of
+#     monkey-patching make_contrib).  This uses our BitFieldCreator descriptor
+#     in place of the default.
+# 
+#     NOTE: If we find ourselves needing custom descriptors for fields, we could
+#     make this generic.
+#     """
+#     def __new__(cls, name, bases, attrs):
+#         def contribute_to_class(self, cls, name):
+#             BigIntegerField.contribute_to_class(self, cls, name)
+#             setattr(cls, self.name, BitFieldCreator(self))
+# 
+#         new_class = super(BitFieldMeta, cls).__new__(cls, name, bases, attrs)
+#         new_class.contribute_to_class = contribute_to_class
+#         return new_class
 
-    NOTE: If we find ourselves needing custom descriptors for fields, we could
-    make this generic.
-    """
-    def __new__(cls, name, bases, attrs):
-        def contribute_to_class(self, cls, name):
-            BigIntegerField.contribute_to_class(self, cls, name)
-            setattr(cls, self.name, BitFieldCreator(self))
 
-        new_class = super(BitFieldMeta, cls).__new__(cls, name, bases, attrs)
-        new_class.contribute_to_class = contribute_to_class
-        return new_class
-
-
-class BitField(six.with_metaclass(BitFieldMeta, BigIntegerField)):
+class BitField(BigIntegerField):
     def __init__(self, flags, default=None, *args, **kwargs):
         if isinstance(flags, dict):
             # Get only integer keys in correct range
@@ -128,7 +136,11 @@ class BitField(six.with_metaclass(BitFieldMeta, BigIntegerField)):
         BigIntegerField.__init__(self, default=default, *args, **kwargs)
         self.flags = flags
         self.labels = labels
-
+    
+    def contribute_to_class(self, cls, name, **kwargs):
+        super(BitField, self).contribute_to_class(cls, name, **kwargs)
+        setattr(cls, self.name, BitFieldCreator(self))
+        
     def south_field_triple(self):
         "Returns a suitable description of this field for South."
         from south.modelsinspector import introspector
@@ -176,7 +188,10 @@ class BitField(six.with_metaclass(BitFieldMeta, BigIntegerField)):
                 return value
             raise TypeError('Lookup type %r not supported with `Bit` type.' % lookup_type)
         return BigIntegerField.get_prep_lookup(self, lookup_type, value)
-
+    
+    def from_db_value(self, value, expression, connection, context):
+        return self.to_python(value)
+        
     def to_python(self, value):
         if isinstance(value, Bit):
             value = value.mask
